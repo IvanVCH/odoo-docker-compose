@@ -11,7 +11,7 @@ services:
     ports:
       - "${POSTGRES_PORT}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_odoodata:/var/lib/postgresql/data
     logging:
       driver: "json-file"
       options:
@@ -63,4 +63,5 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data:
+ postgres_odoodata:
+
