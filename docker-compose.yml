@@ -7,41 +7,79 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_DB=${POSTGRES_DB}
     networks:
-      - postgres
+      - postgres-odoo
     ports:
       - "${POSTGRES_PORT}:5432"
     volumes:
-      - postgres_odoodata:/var/lib/postgresql/data
-    logging:
-      driver: "json-file"
-      options:
-        max-file: "5"
-        max-size: "10m"
+      - mydb-postgres_odoo:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
     restart: always
 
+  # 1) Inicializa/crea la BD de Odoo y fija password del admin
+  odoo-init:
+    image: odoo:${ODOO_VERSION}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres-odoo
+    environment:
+      - HOST=db
+      - USER=${POSTGRES_USER}
+      - PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - ODOO_DB=${ODOO_DB}
+      - ODOO_ADMIN_PASSWORD=${ODOO_ADMIN_PASSWORD}
+    volumes:
+      - odoo_data:/var/lib/odoo
+      - ./addons:/mnt/extra-addons
+      - ./etc:/etc/odoo
+    entrypoint: ["/bin/bash", "-lc"]
+    command: |
+      set -e
+      echo ">> Creando/inicializando BD Odoo: ${ODOO_DB}"
+      odoo -c /etc/odoo/odoo.conf -d "${ODOO_DB}" -i base --without-demo=all --stop-after-init
+
+      echo ">> Fijando password del usuario admin (id=2)"
+      odoo shell -c /etc/odoo/odoo.conf -d "${ODOO_DB}" <<'PY'
+import os
+pwd = os.environ.get("ODOO_ADMIN_PASSWORD", "admin")
+env['res.users'].browse(2).write({'password': pwd})
+env.cr.commit()
+print("Admin password set")
+PY
+
+      echo ">> Init OK"
+    restart: "no"
+
+  # 2) Odoo ya arranca con la BD creada
   odoo:
     container_name: "odoo_${ODOO_VERSION}"
     image: odoo:${ODOO_VERSION}
     depends_on:
-      - db
+      odoo-init:
+        condition: service_completed_successfully
     ports:
       - "${ODOO_PORT}:8069"
+      # (Opcional) si usas longpolling separado:
+      # - "8072:8072"
     networks:
-      - postgres
+      - odoo-postgres
     tty: true
-    command: -- --dev=all
     environment:
       - HOST=db
       - USER=${POSTGRES_USER}
       - PASSWORD=${POSTGRES_PASSWORD}
     volumes:
+      - odoo_data:/var/lib/odoo
       - ./addons:/mnt/extra-addons
       - ./etc:/etc/odoo
-    logging:
-      driver: "json-file"
-      options:
-        max-file: "5"
-        max-size: "10m"
+    # Ojo: aquí NO pongas --stop-after-init
+    command: ["--dev=all"]
     restart: always
 
   pgadmin:
@@ -51,17 +89,18 @@ services:
       - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
       - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     ports:
       - "${PGADMIN_PORT}:80"
     networks:
-      - postgres
+      - odoo-postgres
     restart: unless-stopped
 
 networks:
-  postgres:
+  odoo-postgres:
     driver: bridge
 
 volumes:
- postgres_odoodata:
-
+  mydb-postgres_odoo:
+  odoo_data:
